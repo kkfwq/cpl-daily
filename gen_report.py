@@ -626,8 +626,7 @@ function toggle(id) {{
 </body>
 </html>"""
 
-out_path = f'{ROOT}/docs/report.html'
-os.makedirs(os.path.dirname(out_path), exist_ok=True)
+out_path = f'{ROOT}/report.html'
 with open(out_path, 'w') as f:
     f.write(html)
 
