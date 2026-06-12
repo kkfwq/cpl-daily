@@ -6,6 +6,10 @@ Runs on GitHub Actions. Auto-dates, fetches, aggregates, outputs JSON.
 import requests, json, time, os, sys
 from datetime import datetime, timedelta, timezone
 
+# External Channel ID Whitelist
+EXT_IDS = {476, 477, 451, 432, 365, 318, 323, 412, 336,
+           283, 395, 442, 457, 433, 393}
+
 BASE = 'https://mng.touchpointcorp.com'
 COLS = ("offerId,offerName,affiliateId,affiliateName,advertiserId,advertiserName,dataTime,"
         "totalClickCount,successClickCount,uniqueClickCount,failedClickCount,"
@@ -125,8 +129,10 @@ def si(v, d=0):
 def pct(c, pr):
     return round((c-pr)/pr*100, 1) if pr else None
 
-def classify(name):
+def classify(aid, name):
     n = (name or '').lower()
+    if aid in EXT_IDS:
+        return '外部'
     if 'emu' in n: return 'EMU'
     if '外放' in n: return '外部'
     if 'facebook' in n or 'tiktok' in n or '内部' in n: return '内部'
@@ -138,7 +144,7 @@ def agg_aff(details):
     for r in details:
         a = si(r.get('affiliateId'))
         if not a: continue
-        nm = r.get('affiliateName', ''); ct = classify(nm)
+        nm = r.get('affiliateName', ''); ct = classify(a, nm)
         rv = sf(r.get('revenue')); gp = sf(r.get('gp'))
         cv = si(r.get('conversionCount')); cl = si(r.get('totalClickCount'))
         mp = sf(r.get('mediaPayout')); ap = sf(r.get('affPayout'))
