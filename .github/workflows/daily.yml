@@ -1,0 +1,60 @@
+name: CPL Daily Report
+
+on:
+  schedule:
+    # 9:00 AM Beijing time = 1:00 AM UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:  # Manual trigger for testing
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  fetch-and-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Fetch CPL Data
+        env:
+          CPL_USER: ${{ secrets.CPL_USER }}
+          CPL_PASS: ${{ secrets.CPL_PASS }}
+          CPL_AUTH: ${{ secrets.CPL_AUTH }}
+          CPL_JSESSIONID: ${{ secrets.CPL_JSESSIONID }}
+        run: python daily_cpl.py
+
+      - name: Generate HTML Report
+        run: python gen_report.py
+
+      - name: Setup GitHub Pages
+        uses: actions/configure-pages@v4
+
+      - name: Deploy to GitHub Pages
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: '.'
+          name: github-pages
+
+      - name: Publish GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
+
+      - name: Send Feishu Notification
+        env:
+          FEISHU_WEBHOOK_URL: ${{ secrets.FEISHU_WEBHOOK_URL }}
+          REPORT_URL: ${{ steps.deployment.outputs.page_url }}report.html
+        run: python feishu_webhook.py
