@@ -25,12 +25,12 @@ PASS = os.environ.get('CPL_PASS', 'Freda6666')
 AUTH_ROUTE = os.environ.get('CPL_AUTH', 'FAXX7UPNAE7O4BTRM2AS6UN4CMBIL5JC')
 JSESSIONID = os.environ.get('CPL_JSESSIONID', '63f86c47-724c-4d93-829b-312c4dfb0919')
 
-# ── Dates (GMT) ──
-utc = datetime.now(timezone.utc)
-today_gmt = utc.date()
-yd = today_gmt - timedelta(days=1)          # analysis date
+# ── Dates (Beijing Time = UTC+8) ──
+bj_now = datetime.now(timezone.utc) + timedelta(hours=8)
+today_bj = bj_now.date()
+yd = today_bj - timedelta(days=1)          # analysis date (yesterday Beijing)
 db = yd - timedelta(days=1)                 # day-before
-lw = yd - timedelta(days=7)                 # last-week
+lw = yd - timedelta(days=7)                 # last-week same day
 m1 = yd.replace(day=1)                      # MTD start
 
 MAIN = yd.strftime('%Y-%m-%d')
@@ -56,45 +56,95 @@ s.headers.update({
     'referer': BASE + '/',
 })
 
-# Use cached JSESSIONID
+# Use cached JSESSIONID first
 s.cookies.set('JSESSIONID', JSESSIONID)
 
-# Try to refresh login
-try:
-    r = s.get(f'{BASE}/api/debug/login/auth/{AUTH_ROUTE}')
-    jr = r.json()
-    ac = None
-    if isinstance(jr, dict):
-        res = jr.get('result')
-        if isinstance(res, str): ac = res
-    if ac:
-        r2 = s.post(f'{BASE}/api/authLogin', json={
-            'username': USER, 'password': PASS, 'authCode': ac, 'platform': 'web'
-        })
-        if r2.json().get('success'):
-            new_jsid = s.cookies.get('JSESSIONID', '')
-            print(f"  Login refreshed: {new_jsid[:16]}...")
-            # Update env for potential reuse
-            if new_jsid:
-                with open(os.environ.get('GITHUB_ENV', '/dev/null'), 'a') as f:
-                    f.write(f'CPL_JSESSIONID={new_jsid}\n')
+# Try to refresh login - multiple attempts
+login_ok = False
+for attempt in range(3):
+    try:
+        r = s.get(f'{BASE}/api/debug/login/auth/{AUTH_ROUTE}', timeout=20)
+        jr = r.json()
+        ac = None
+        if isinstance(jr, dict):
+            res = jr.get('result')
+            if isinstance(res, str) and res:
+                ac = res
+            elif isinstance(res, dict):
+                ac = res.get('route') or res.get('authCode') or res.get('code')
+        if ac:
+            r2 = s.post(f'{BASE}/api/authLogin', json={
+                'username': USER, 'password': PASS, 'authCode': ac, 'platform': 'web'
+            }, timeout=20)
+            resp2 = r2.json()
+            if resp2.get('success'):
+                new_jsid = s.cookies.get('JSESSIONID', '')
+                print(f"  Login refreshed (attempt {attempt+1}): {new_jsid[:16]}...")
+                if new_jsid:
+                    with open(os.environ.get('GITHUB_ENV', '/dev/null'), 'a') as f:
+                        f.write(f'CPL_JSESSIONID={new_jsid}\n')
+                login_ok = True
+                break
+            else:
+                msg = resp2.get('message', '')
+                print(f"  Login API failed (attempt {attempt+1}): {msg}")
+                # If password incorrect, try alternative BASE URL
+                if 'incorrect' in msg.lower() or 'password' in msg.lower():
+                    # Try the track domain
+                    if BASE == 'https://mng.touchpointcorp.com':
+                        BASE_ALT = 'https://track.weconnectlead.com'
+                        print(f"  Trying alt base: {BASE_ALT}")
+                        s2 = requests.Session()
+                        s2.headers.update(s.headers)
+                        r3 = s2.get(f'{BASE_ALT}/api/debug/login/auth/{AUTH_ROUTE}', timeout=20)
+                        jr3 = r3.json()
+                        ac3 = None
+                        if isinstance(jr3, dict):
+                            res3 = jr3.get('result')
+                            if isinstance(res3, str) and res3:
+                                ac3 = res3
+                            elif isinstance(res3, dict):
+                                ac3 = res3.get('route') or res3.get('authCode')
+                        if ac3:
+                            r4 = s2.post(f'{BASE_ALT}/api/authLogin', json={
+                                'username': USER, 'password': PASS, 'authCode': ac3, 'platform': 'web'
+                            }, timeout=20)
+                            resp4 = r4.json()
+                            if resp4.get('success'):
+                                new_jsid = s2.cookies.get('JSESSIONID', '')
+                                print(f"  Alt login success! JSESSIONID: {new_jsid[:16]}...")
+                                # Switch to alt base
+                                BASE = BASE_ALT
+                                s = s2
+                                if new_jsid:
+                                    with open(os.environ.get('GITHUB_ENV', '/dev/null'), 'a') as f:
+                                        f.write(f'CPL_JSESSIONID={new_jsid}\n')
+                                login_ok = True
+                                break
         else:
-            print(f"  Login API failed (using cached): {r2.json().get('message')}")
-    else:
-        print("  No auth code, using cached session")
-except Exception as e:
-    print(f"  Login attempt failed (using cached): {e}")
+            print(f"  No auth code returned (attempt {attempt+1}), raw: {str(jr)[:200]}")
+        time.sleep(2)
+    except Exception as e:
+        print(f"  Login attempt {attempt+1} failed: {e}")
+        time.sleep(2)
+
+if not login_ok:
+    print(f"  Using cached JSESSIONID (may be expired)")
 
 # ── Fetch ──
 def fetch(sd, ed):
     items = []; p = 1; su = {}
     while True:
-        r = s.get(f'{BASE}/api/report/cpl/common', params={
-            'columns': COLS, 'fromDate': sd, 'endDate': ed,
-            'sorting': 'dataTime', 'timezone': '+00:00',
-            'page': p, 'pageSize': 1000, 't': str(int(time.time()*1000))
-        }, timeout=60)
-        d = r.json()
+        try:
+            r = s.get(f'{BASE}/api/report/cpl/common', params={
+                'columns': COLS, 'fromDate': sd, 'endDate': ed,
+                'sorting': 'dataTime', 'timezone': '+00:00',
+                'page': p, 'pageSize': 1000, 't': str(int(time.time()*1000))
+            }, timeout=60)
+            d = r.json()
+        except Exception as e:
+            print(f"  ERR p{p}: {e}")
+            break
         if not d.get('success'):
             print(f"  ERR p{p}: {d}")
             break
@@ -130,9 +180,9 @@ def pct(c, pr):
     return round((c-pr)/pr*100, 1) if pr else None
 
 def classify(aid, name):
-    n = (name or '').lower()
     if aid in EXT_IDS:
         return '外部'
+    n = (name or '').lower()
     if 'emu' in n: return 'EMU'
     if '外放' in n: return '外部'
     if 'facebook' in n or 'tiktok' in n or '内部' in n: return '内部'
@@ -193,6 +243,26 @@ mav = agg_adv(mtd['details'])
 ts = data['today']['summary']; ys = data['yesterday']['summary']
 ls = data['last_week']['summary']; ms = mtd['summary']
 
+# ── Check if we actually got data ──
+if not ts and not any(data[k]['details'] for k in ['today', 'yesterday', 'last_week']):
+    print("\n[ERROR] No data fetched at all - authentication failed!")
+    print("  Please update CPL_JSESSIONID secret in GitHub repository settings.")
+    print("  Go to: https://github.com/kkfwq/cpl-daily/settings/secrets/actions")
+    sys.exit(1)
+
+if not ts:
+    print(f"\n[WARNING] No summary data for today ({MAIN}), using empty defaults")
+    ts = {}
+if not ys:
+    print(f"[WARNING] No summary data for yesterday ({DB})")
+    ys = {}
+if not ls:
+    print(f"[WARNING] No summary data for last week ({LW})")
+    ls = {}
+if not ms:
+    print(f"[WARNING] No MTD summary data")
+    ms = {}
+
 ext_s = sorted(tex.values(), key=lambda x: x['rev'], reverse=True)
 adv_s = sorted(tav.values(), key=lambda x: x['rev'], reverse=True)
 mtd_s = sorted(mav.values(), key=lambda x: x['rev'], reverse=True)
@@ -200,19 +270,19 @@ mtd_s = sorted(mav.values(), key=lambda x: x['rev'], reverse=True)
 summary = {
     'main_date': MAIN,
     'main_display': MAIN_DISPLAY,
-    'revenue': round(sf(ts['revenue']), 2),
-    'gp': round(sf(ts['gp']), 2),
-    'margin': round(sf(ts['gp']) / sf(ts['revenue']) * 100, 1) if sf(ts['revenue']) else 0,
-    'conversions': si(ts['conversionCount']),
-    'media_payout': round(sf(ts['mediaPayout']), 2),
-    'epc': round(sf(ts['epc']), 4),
-    'cr': round(sf(ts['cr']), 2),
-    'vpn_rate': round(sf(ts['vpnRate']), 2),
-    'dod_rev': pct(sf(ts['revenue']), sf(ys['revenue'])),
-    'dod_gp': pct(sf(ts['gp']), sf(ys['gp'])),
-    'dod_conv': pct(si(ts['conversionCount']), si(ys['conversionCount'])),
-    'wow_rev': pct(sf(ts['revenue']), sf(ls['revenue'])),
-    'wow_gp': pct(sf(ts['gp']), sf(ls['gp'])),
+    'revenue': round(sf(ts.get('revenue')), 2),
+    'gp': round(sf(ts.get('gp')), 2),
+    'margin': round(sf(ts.get('gp')) / sf(ts.get('revenue')) * 100, 1) if sf(ts.get('revenue')) else 0,
+    'conversions': si(ts.get('conversionCount')),
+    'media_payout': round(sf(ts.get('mediaPayout')), 2),
+    'epc': round(sf(ts.get('epc')), 4),
+    'cr': round(sf(ts.get('cr')), 2),
+    'vpn_rate': round(sf(ts.get('vpnRate')), 2),
+    'dod_rev': pct(sf(ts.get('revenue')), sf(ys.get('revenue'))),
+    'dod_gp': pct(sf(ts.get('gp')), sf(ys.get('gp'))),
+    'dod_conv': pct(si(ts.get('conversionCount')), si(ys.get('conversionCount'))),
+    'wow_rev': pct(sf(ts.get('revenue')), sf(ls.get('revenue'))),
+    'wow_gp': pct(sf(ts.get('gp')), sf(ls.get('gp'))),
     'ext_top10': [{'rank': i+1, 'id': e['aid'], 'name': e['name'],
                     'rev': round(e['rev'], 2), 'gp': round(e['gp'], 2),
                     'conv': e['conv'], 'epc': round(e['epc'], 4),
@@ -222,15 +292,15 @@ summary = {
                     'conv': e['conv'],
                     'margin': round(e['gp'] / e['rev'] * 100, 1) if e['rev'] else 0}
                   for i, e in enumerate(adv_s[:10])],
-    'mtd_rev': round(sf(ms['revenue']), 2),
-    'mtd_gp': round(sf(ms['gp']), 2),
-    'mtd_conv': si(ms['conversionCount']),
+    'mtd_rev': round(sf(ms.get('revenue')), 2),
+    'mtd_gp': round(sf(ms.get('gp')), 2),
+    'mtd_conv': si(ms.get('conversionCount')),
     'mtd_days': (yd - m1).days + 1,
-    'mtd_daily_avg': round(sf(ms['revenue']) / ((yd - m1).days + 1), 2),
+    'mtd_daily_avg': round(sf(ms.get('revenue')) / ((yd - m1).days + 1), 2),
     'mtd_top_adv': {'id': mtd_s[0]['aid'], 'name': mtd_s[0]['name'],
                     'rev': round(mtd_s[0]['rev'], 2)} if mtd_s else None,
     'ext_count': len(ext_s),
-    'total_clicks': si(ts['totalClickCount']),
+    'total_clicks': si(ts.get('totalClickCount')),
 }
 
 with open(f'{ROOT}/cpl_summary.json', 'w') as f:
