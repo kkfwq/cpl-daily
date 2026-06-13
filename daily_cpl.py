@@ -23,7 +23,7 @@ ROOT = os.environ.get('GITHUB_WORKSPACE', os.path.dirname(os.path.abspath(__file
 USER = os.environ.get('CPL_USER', 'freda@touchpointcorp.com')
 PASS = os.environ.get('CPL_PASS', 'Freda6666')
 AUTH_ROUTE = os.environ.get('CPL_AUTH', 'FAXX7UPNAE7O4BTRM2AS6UN4CMBIL5JC')
-JSESSIONID = os.environ.get('CPL_JSESSIONID', '63f86c47-724c-4d93-829b-312c4dfb0919')
+JSESSIONID = os.environ.get('CPL_JSESSIONID', '8916a9ab-8244-486d-8e2f-1a3155be4f7d')
 
 # ── Dates (Beijing Time = UTC+8) ──
 bj_now = datetime.now(timezone.utc) + timedelta(hours=8)
